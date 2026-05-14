@@ -16,9 +16,6 @@ AUTH_SERVICE_URL = os.environ["AUTH_SERVICE_URL"]
 # Shared secret — must match TOKEN_SERVICE_SECRET on the broker.
 _TOKEN_SECRET = os.environ["TOKEN_SERVICE_SECRET"]
 
-# API Executable deployment ID (starts with AKfy), from Deploy → Manage deployments.
-SCRIPT_ID = os.environ["SCRIPT_ID"]
-
 AUTH_URL = f"{AUTH_SERVICE_URL}/auth"
 
 
@@ -60,10 +57,14 @@ def scripts_run(access_token: str, function_name: str, params: dict) -> dict:
     """
     Executes a function in the linked Apps Script API Executable deployment
     using the provided user access token.
+    Requires SCRIPT_ID env var (API Executable deployment ID, starts with AKfy).
     """
+    script_id = os.environ.get("SCRIPT_ID")
+    if not script_id:
+        raise RuntimeError("SCRIPT_ID env var is required to use scripts_run()")
     creds = Credentials(token=access_token)
     service = build("script", "v1", credentials=creds)
     return service.scripts().run(
-        scriptId=SCRIPT_ID,
+        scriptId=script_id,
         body={"function": function_name, "parameters": [params], "devMode": False},
     ).execute()

@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -14,7 +15,6 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from google.api_core.exceptions import AlreadyExists
 from google.cloud import secretmanager
 from google_auth_oauthlib.flow import Flow
-from googleapiclient.discovery import build
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -159,7 +159,10 @@ def _verify_state(signed: str) -> dict:
     expected = hmac.new(TOKEN_SERVICE_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
     if not hmac.compare_digest(sig, expected):
         raise HTTPException(status_code=400, detail="Invalid state signature.")
-    return json.loads(base64.urlsafe_b64decode(payload.encode()).decode())
+    try:
+        return json.loads(base64.urlsafe_b64decode(payload.encode()).decode())
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid state parameter.")
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -195,20 +198,46 @@ async def auth_start(hint: str = ""):
 
 @app.get("/auth/callback")
 async def auth_callback(code: str, state: str):
+    import html as _html
+
     state_data = _verify_state(state)
     flow = _make_flow()
     flow.redirect_uri = REDIRECT_URI
-    flow.fetch_token(code=code, code_verifier=state_data["cv"])
+
+    try:
+        await asyncio.to_thread(flow.fetch_token, code=code, code_verifier=state_data["cv"])
+    except Exception as e:
+        logger.error(f"Token fetch failed during OAuth callback: {e}")
+        return HTMLResponse("""<!DOCTYPE html>
+<html><head><title>Authorisation Failed</title>
+<style>body{font-family:sans-serif;max-width:600px;margin:80px auto;text-align:center;color:#202124}
+h1{color:#d93025}p{line-height:1.6}</style></head>
+<body>
+<h1>&#10007; Authorisation Failed</h1>
+<p>Something went wrong exchanging your authorisation code.</p>
+<p>This can happen if the link expired or was already used.</p>
+<p><a href="/auth">Try again</a></p>
+</body></html>""", status_code=400)
 
     creds = flow.credentials
-    user_info = build("oauth2", "v2", credentials=creds).userinfo().get().execute()
-    email = user_info.get("email")
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                "https://www.googleapis.com/oauth2/v2/userinfo",
+                headers={"Authorization": f"Bearer {creds.token}"},
+                timeout=10,
+            )
+            resp.raise_for_status()
+        email = resp.json().get("email")
+    except Exception as e:
+        logger.error(f"Failed to retrieve user info during OAuth callback: {e}")
+        raise HTTPException(status_code=502, detail="Could not retrieve user info from Google.")
+
     if not email:
         raise HTTPException(status_code=400, detail="Could not retrieve user email.")
 
     _store_refresh_token(email, creds.refresh_token)
 
-    import html as _html
     hint = state_data.get("h", "")
     success_message = os.environ.get("AUTH_SUCCESS_MESSAGE", "Return to your agent and re-submit your request.")
     hint_html = (
@@ -223,7 +252,7 @@ async def auth_callback(code: str, state: str):
 h1{{color:#1a73e8}}p{{line-height:1.6}}</style></head>
 <body>
 <h1>&#10003; Authorisation Successful</h1>
-<p>Access granted for <strong>{email}</strong>.</p>
+<p>Access granted for <strong>{_html.escape(email)}</strong>.</p>
 {hint_html}
 </body></html>""")
 

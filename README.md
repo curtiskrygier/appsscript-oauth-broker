@@ -7,18 +7,19 @@ Full write-up: [The Cloud Run OAuth Broker: Per-User Identity for Gemini Enterpr
 ## How it works
 
 ```
-User (once)   → /auth          → Google OAuth consent → refresh token stored in Secret Manager
-Agent (every call) → auth_utils.get_access_token(email)
-                  → broker /token → fresh access token
-                  → auth_utils.scripts_run(token, fn, params)
-                  → Apps Script API Executable → executes as that user
+User (once)    → GET /auth            → Google OAuth consent
+               → GET /auth/callback   → refresh token stored in Secret Manager
+
+Agent (per call) → GET /token?email=  → fresh access token
+                   (Authorization: Bearer TOKEN_SERVICE_SECRET)
+               → call any Google API as that user
 ```
 
 Two flows, one infrastructure. Users authorise once. Every subsequent agent call executes as the requesting user — their identity appears in Drive, Docs, Calendar, and audit logs.
 
 ## Prerequisites summary
 
-Five GCP resources are needed before this works: a Cloud Run service, a Secret Manager secret for the OAuth client secret, per-user secrets (created automatically on first auth), an OAuth 2.0 Web client in the GCP Console, and an Apps Script API Executable deployment. See [Prerequisites](#prerequisites) below.
+Several GCP resources are needed before this works: Cloud Run, two Secret Manager secrets (client secret + broker shared secret), an OAuth 2.0 Web client, IAM bindings for two service accounts, and an Apps Script API Executable deployment. Per-user secrets are created automatically on first auth. See [Prerequisites](#prerequisites) below.
 
 ## Repository structure
 
@@ -109,9 +110,8 @@ Copy `agent/auth_utils.py` into your agent package and set these environment var
 
 ```bash
 agents-cli deploy ... \
-  --update-env-vars "AUTH_SERVICE_URL=https://YOUR_SERVICE_URL,\
-TOKEN_SERVICE_SECRET=YOUR_SECRET,\
-SCRIPT_ID=AKfy...YOUR_DEPLOYMENT_ID"
+  --update-env-vars "AUTH_SERVICE_URL=https://YOUR_SERVICE_URL,SCRIPT_ID=AKfy...YOUR_DEPLOYMENT_ID" \
+  --update-secrets "TOKEN_SERVICE_SECRET=token-service-secret:latest"
 ```
 
 ## Usage
