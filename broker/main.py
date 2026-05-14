@@ -29,14 +29,15 @@ REDIRECT_URI = os.environ["REDIRECT_URI"]
 BASE_URL = REDIRECT_URI.removesuffix("/auth/callback")
 
 # Shared secret between this service and the agent. Used to authenticate /token calls.
+# Frozen for the instance lifetime — rotation requires a redeploy (gcloud run services update --region ...).
 TOKEN_SERVICE_SECRET = os.environ["TOKEN_SERVICE_SECRET"]
 
 # CLIENT_SECRET is stored in Secret Manager under this secret ID.
 CLIENT_SECRET_ID = os.environ.get("CLIENT_SECRET_ID", "oauth-client-secret")
 
 # ── Scopes ────────────────────────────────────────────────────────────────────
-# Adjust to the minimum your Apps Script project declares.
-# Mismatched scopes cause PERMISSION_DENIED from scripts.run.
+# Trim to the minimum required by your use case.
+# Mismatched scopes cause PERMISSION_DENIED from Google APIs.
 SCOPES = [
     # Required for all deployments — identifies the user after consent
     "openid",
@@ -80,24 +81,35 @@ app = FastAPI(title="Cloud Run OAuth Broker")
 def _get_client_secret() -> str:
     # Cached for the instance lifetime. If the secret is rotated in Secret Manager,
     # redeploy the service to pick up the new value (gcloud run services update --region ...).
+    from google.api_core.exceptions import NotFound
     client = secretmanager.SecretManagerServiceClient()
     name = f"projects/{PROJECT_ID}/secrets/{CLIENT_SECRET_ID}/versions/latest"
-    return client.access_secret_version(request={"name": name}).payload.data.decode()
+    try:
+        return client.access_secret_version(request={"name": name}).payload.data.decode()
+    except NotFound:
+        raise HTTPException(status_code=500, detail=f"Broker misconfigured: secret '{CLIENT_SECRET_ID}' not found in Secret Manager")
+
+
+def _email_to_secret_id(email: str) -> str:
+    return f"workspace-token-{email.replace('@', '-at-').replace('.', '-dot-')}"
 
 
 def _get_refresh_token(email: str) -> str | None:
-    secret_id = f"workspace-token-{email.replace('@', '-').replace('.', '-')}"
+    from google.api_core.exceptions import NotFound
+    secret_id = _email_to_secret_id(email)
     try:
         client = secretmanager.SecretManagerServiceClient()
         name = f"projects/{PROJECT_ID}/secrets/{secret_id}/versions/latest"
         return client.access_secret_version(request={"name": name}).payload.data.decode()
-    except Exception as e:
-        logger.error(f"Failed to retrieve token for {email}: {e}")
+    except NotFound:
         return None
+    except Exception as e:
+        logger.error(f"Secret Manager error retrieving token for {email}: {e}")
+        raise HTTPException(status_code=503, detail="Token store unavailable")
 
 
 def _store_refresh_token(email: str, refresh_token: str):
-    secret_id = f"workspace-token-{email.replace('@', '-').replace('.', '-')}"
+    secret_id = _email_to_secret_id(email)
     client = secretmanager.SecretManagerServiceClient()
     parent = f"projects/{PROJECT_ID}"
     secret_path = f"{parent}/secrets/{secret_id}"
@@ -260,7 +272,7 @@ h1{{color:#1a73e8}}p{{line-height:1.6}}</style></head>
 @app.get("/token")
 async def get_token(request: Request, email: str):
     """
-    Called by the ADK agent to exchange a stored refresh token for a fresh access token.
+    Exchange a stored refresh token for a fresh access token.
     Requires Authorization: Bearer <TOKEN_SERVICE_SECRET>.
     Returns {"status": "ok", "access_token": "..."} or
             {"status": "auth_required", "auth_url": "..."}.

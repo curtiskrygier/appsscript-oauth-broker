@@ -11,11 +11,9 @@ logger = logging.getLogger(__name__)
 # Set these as environment variables on your Reasoning Engine / Agent deployment.
 
 # URL of the deployed Cloud Run broker, no trailing slash.
-AUTH_SERVICE_URL = os.environ["AUTH_SERVICE_URL"]
-
-# Shared secret — must match TOKEN_SERVICE_SECRET on the broker.
-_TOKEN_SECRET = os.environ["TOKEN_SERVICE_SECRET"]
-
+# Required: set AUTH_SERVICE_URL and TOKEN_SERVICE_SECRET in your deployment environment.
+AUTH_SERVICE_URL = os.environ.get("AUTH_SERVICE_URL", "")
+_TOKEN_SECRET = os.environ.get("TOKEN_SERVICE_SECRET", "")
 AUTH_URL = f"{AUTH_SERVICE_URL}/auth"
 
 
@@ -27,6 +25,8 @@ async def get_access_token(email: str) -> str | None:
     Returns None if the user has not yet completed the /auth consent flow,
     or if the broker is unreachable.
     """
+    if not AUTH_SERVICE_URL or not _TOKEN_SECRET:
+        raise RuntimeError("AUTH_SERVICE_URL and TOKEN_SERVICE_SECRET environment variables must be set")
     headers = {"Authorization": f"Bearer {_TOKEN_SECRET}"}
     try:
         async with httpx.AsyncClient() as client:

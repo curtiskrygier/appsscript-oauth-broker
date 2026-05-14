@@ -1,8 +1,10 @@
 # workspace-oauth-broker
 
-A portable Cloud Run OAuth broker for any AI agent framework that needs to act as specific Google Workspace users. Works with ADK, LangChain, Claude API, or any framework that can make an HTTP call.
+Google's `scripts.run` API requires a user OAuth token — service accounts can't call it on behalf of users. This Cloud Run broker solves that gap: users consent once, their refresh token is stored in Secret Manager, and your agent exchanges it for a fresh access token on every call.
 
-Full write-up: [The Cloud Run OAuth Broker: Per-User Identity for Gemini Enterprise Agents](https://techmusings.krygier.fr/post/cloud-run-oauth-broker)
+Works with ADK, LangChain, Claude API, or any framework that can make an HTTP call. The broker is framework-agnostic; `agent/auth_utils.py` is an ADK + Apps Script example.
+
+Full write-up: [The Cloud Run OAuth Broker: Per-User Identity for AI Agents](https://techmusings.krygier.fr/post/cloud-run-oauth-broker)
 
 ## How it works
 
@@ -158,7 +160,7 @@ async def setup_client_workspace(client_name: str, project_type: str, tool_conte
     return result.get("response", {}).get("result", {})
 ```
 
-`scripts_run` is one example — `get_access_token` returns a standard Bearer token usable with any Google API. Pass it to `google.oauth2.credentials.Credentials(token=access_token)` and build any service client.
+`get_access_token` returns a standard Bearer token usable with any Google API. `scripts_run` is the Apps Script example — pass the token to `google.oauth2.credentials.Credentials(token=access_token)` to build any other service client.
 
 ## Security notes
 
@@ -185,9 +187,9 @@ gcloud run services update YOUR_SERVICE --region YOUR_REGION
 
 **Scope minimisation:** Remove every scope from `SCOPES` that your Apps Script function does not call. The default list is annotated — trim it to reduce the consent screen footprint and blast radius.
 
-## Testing — playground identity
+## Testing
 
-The Agent Builder playground resolves `tool_context.user_id` to a system identity, not a user email. Add a guard for local testing and remove it before any shared deployment:
+**ADK / Agent Builder playground:** `tool_context.user_id` resolves to a system identity, not a user email. Add a guard for local testing and remove it before any shared deployment:
 
 ```python
 DEV_EMAIL = os.environ.get("DEV_EMAIL", "")
@@ -198,3 +200,10 @@ def my_tool(tool_context):
         user_email = DEV_EMAIL  # REMOVE before production
     ...
 ```
+
+**Other frameworks:** Pass the user's email directly — no framework-specific identity resolution needed. Ensure your user has completed the `/auth` consent flow first.
+
+## Known limitations
+
+- **No rate limiting on `/token`:** Each call hits Secret Manager and Google's token endpoint. A misconfigured agent in a retry loop will exhaust quota. Add retry backoff in your agent code and consider caching the access token for its 1-hour lifetime on the client side.
+- **Single-instance token cache:** `_get_client_secret()` is cached per Cloud Run instance. In a multi-instance deployment, each instance fetches the secret independently on first call.
