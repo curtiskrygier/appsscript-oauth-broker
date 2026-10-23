@@ -1,0 +1,36 @@
+# Runs on every pull request (Dependabot's included) and on pushes to main, so a dependency bump that breaks the broker
+# or the agent shows up red before it is merged. No secrets are needed: Google calls are mocked.
+# Two jobs because broker/ and agent/ are separate deployables with their own pins (they can't share one environment:
+# broker pins google-auth==2.53.0, agent asks for >=2.57.0).
+name: Smoke tests
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  broker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'   # the Dockerfile's base image
+      - run: pip install -r broker/requirements.txt
+      - run: python -m unittest discover -s tests -v
+      - name: Server starts and answers
+        env: { PROJECT_ID: p, CLIENT_ID: c, REDIRECT_URI: 'https://x/cb', TOKEN_SERVICE_SECRET: ci-only-not-a-secret }
+        run: |
+          cd broker && (uvicorn main:app --port 8080 &) && sleep 4
+          curl -fsS http://127.0.0.1:8080/health
+  agent:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r agent/requirements.txt
+      - name: Agent package imports
+        run: python -c "import agent.auth_utils"
